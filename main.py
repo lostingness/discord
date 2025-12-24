@@ -18,7 +18,7 @@ from discord.ui import Button, View
 # Get environment variables for Railway
 TOKEN = os.environ.get('DISCORD_BOT_TOKEN')
 YOUR_DISCORD_ID = int(os.environ.get('ADMIN_DISCORD_ID', 1355605971858100249))
-DEFAULT_CHANNEL_ID = int(os.environ.get('DEFAULT_CHANNEL_ID', 1435704878986039356))
+DEFAULT_CHANNEL_ID = int(os.environ.get('DEFAULT_CHANNEL_ID', 1426254093914996927))
 
 # Exit if no token
 if not TOKEN:
@@ -35,7 +35,7 @@ DETAILS_API_URL = "https://lostingness.site/KEY/Infox.php?type={value}"
 TELEGRAM_API_URL = "https://my.lostingness.site/tgn.php?value={value}"
 
 # Bot Invite Link
-BOT_INVITE_LINK = "https://discord.com/oauth2/authorize?client_id=1429769934157905940&permissions=8&integration_type=0&scope=bot"
+BOT_INVITE_LINK = "https://discord.com/oauth2/authorize?client_id=1423745189947904042&permissions=8&integration_type=0&scope=bot"
 
 # Developer Information
 DEVELOPER_INFO = {
@@ -1087,7 +1087,7 @@ async def on_message(message):
                                         "`!num 7405453929` - Search mobile number **(1 credit)**\n"
                                         "`!card 123456789012` - Search Aadhaar card **(1 credit)**\n"
                                         "`!email example@domain.com` - Search email address **(1 credit)**\n"
-                                        "`!tg username` - Telegram to mobile search **(5 credits)**"
+                                        "`!tg userid` - Telegram to mobile search **(5 credits)**"
                                     ),
                                     inline=False
                                 )
@@ -2096,7 +2096,7 @@ async def send_bot_info_dm(member, sender):
                 "`!num 7405453929` - Search mobile number\n"
                 "`!card 123456789012` - Search Aadhaar card\n"
                 "`!email test@example.com` - Search email\n"
-                "`!tg username` - Telegram ID search\n"
+                "`!tg userid` - Telegram ID search\n"
                 "`!credits` - Check your balance\n"
                 "`!voice` - Voice chat status"
             ),

@@ -1279,7 +1279,14 @@ async def make_api_request(url, max_retries=3):
             async with aiohttp.ClientSession(headers=headers) as session:
                 async with session.get(url, timeout=30, ssl=False) as response:
                     if response.status == 200:
-                        return await response.json()
+                        try:
+                            return await response.json()
+                        except:
+                            # Handle non-JSON response
+                            text = await response.text()
+                            if "No records found" in text:
+                                return {"message": "No records found"}
+                            return text
                     elif response.status in [502, 503, 504]:
                         print(f"⚠️ Server error {response.status}, attempt {attempt + 1}/{max_retries}")
                         if attempt < max_retries - 1:
@@ -1443,7 +1450,7 @@ async def send_premium_results(ctx, search_value, data, search_type="mobile"):
     """Send formatted search results"""
     
     # Check for no records or empty response
-    if not data or (isinstance(data, dict) and data.get("message") == "No records found"):
+    if not data:
         embed = discord.Embed(
             title="📭 No Records Found",
             description=f"No records found for: `{search_value}`",
@@ -1465,81 +1472,15 @@ async def send_premium_results(ctx, search_value, data, search_type="mobile"):
             pass
         return
     
-    # New Telegram API response format
-    if search_type == "telegram" and isinstance(data, dict):
-        if data.get("success") == True:
+    # Handle string responses
+    if isinstance(data, str):
+        if "No records found" in data:
             embed = discord.Embed(
-                title="✅ Telegram Search Successful!",
-                description=f"**Found details for Telegram ID:** `{search_value}`",
-                color=0x57F287,
-                timestamp=datetime.now(timezone.utc)
+                title="📭 No Records Found",
+                description=f"No records found for: `{search_value}`",
+                color=0xFEE75C
             )
-            
-            # Phone info section
-            if 'phone_info' in data:
-                phone_info = data['phone_info']
-                embed.add_field(
-                    name="📱 **PHONE INFORMATION**",
-                    value=(
-                        f"**Country:** {phone_info.get('country', 'N/A')}\n"
-                        f"**Country Code:** {phone_info.get('country_code', 'N/A')}\n"
-                        f"**Number:** {phone_info.get('number', 'N/A')}\n"
-                        f"**Full Number:** {phone_info.get('full_number', 'N/A')}"
-                    ),
-                    inline=False
-                )
-            
-            # Account info section
-            if 'account_info' in data:
-                account_info = data['account_info']
-                account_status = "✅ Active" if account_info.get('is_active') else "❌ Inactive"
-                bot_status = "🤖 Bot" if account_info.get('is_bot') else "👤 User"
-                
-                embed.add_field(
-                    name="👤 **ACCOUNT INFORMATION**",
-                    value=(
-                        f"**Status:** {account_status}\n"
-                        f"**Type:** {bot_status}\n"
-                        f"**First Name:** {account_info.get('first_name', 'N/A')}\n"
-                        f"**Last Name:** {account_info.get('last_name', 'N/A')}"
-                    ),
-                    inline=False
-                )
-                
-                # Activity info if available
-                activity_text = ""
-                if account_info.get('total_messages', 0) > 0:
-                    activity_text += f"**Total Messages:** {account_info.get('total_messages')}\n"
-                if account_info.get('total_groups', 0) > 0:
-                    activity_text += f"**Groups Joined:** {account_info.get('total_groups')}\n"
-                if account_info.get('messages_in_groups', 0) > 0:
-                    activity_text += f"**Group Messages:** {account_info.get('messages_in_groups')}\n"
-                if account_info.get('admin_in_groups', 0) > 0:
-                    activity_text += f"**Admin in Groups:** {account_info.get('admin_in_groups')}"
-                
-                if activity_text:
-                    embed.add_field(name="📊 **ACTIVITY STATS**", value=activity_text, inline=False)
-            
-            # Summary section
-            if 'summary' in data:
-                summary = data['summary']
-                embed.add_field(
-                    name="📋 **SEARCH SUMMARY**",
-                    value=(
-                        f"**Phone Available:** {'✅ Yes' if summary.get('phone_available') else '❌ No'}\n"
-                        f"**Account Available:** {'✅ Yes' if summary.get('account_available') else '❌ No'}\n"
-                        f"**Data Sources:** {summary.get('data_sources', 0)}"
-                    ),
-                    inline=False
-                )
-            
-            embed.add_field(name="👤 **Requested By**", value=f"{ctx.author.mention}", inline=True)
-            
-            if data.get('phone_info', {}).get('footer'):
-                embed.add_field(name="✨ **Powered By**", value=f"**{data['phone_info']['footer']}**", inline=True)
-            
-            embed.set_footer(text=f"Telegram ID Search • {get_indian_time()}")
-            
+            embed.add_field(name="👤 User", value=f"{ctx.author.mention}", inline=True)
             message = await ctx.send(embed=embed)
             await asyncio.sleep(180)
             try:
@@ -1548,19 +1489,28 @@ async def send_premium_results(ctx, search_value, data, search_type="mobile"):
                 pass
             return
         else:
-            # Telegram API returned success: false
+            # Try to parse as JSON
+            try:
+                data = json.loads(data)
+            except:
+                embed = discord.Embed(
+                    title="❌ Invalid Response",
+                    description="The API returned an invalid response format.",
+                    color=0xED4245
+                )
+                await ctx.send(embed=embed, delete_after=30)
+                return
+    
+    # Handle dictionary responses
+    if isinstance(data, dict):
+        # Check for "No records found" message
+        if data.get("message") == "No records found":
             embed = discord.Embed(
-                title="📭 Telegram Details Not Found",
-                description=f"No Telegram details found for: `{search_value}`",
+                title="📭 No Records Found",
+                description=f"No records found for: `{search_value}`",
                 color=0xFEE75C
             )
-            embed.add_field(
-                name="💡 Information",
-                value="• This Telegram ID may not exist or is private\n• The account might be deleted\n• Try with a different Telegram ID",
-                inline=False
-            )
             embed.add_field(name="👤 User", value=f"{ctx.author.mention}", inline=True)
-            
             message = await ctx.send(embed=embed)
             await asyncio.sleep(180)
             try:
@@ -1568,9 +1518,96 @@ async def send_premium_results(ctx, search_value, data, search_type="mobile"):
             except:
                 pass
             return
+        
+        # Telegram API response format
+        if search_type == "telegram":
+            if data.get("success") == True:
+                embed = discord.Embed(
+                    title="✅ Telegram Search Successful!",
+                    description=f"**Found details for Telegram ID:** `{search_value}`",
+                    color=0x57F287,
+                    timestamp=datetime.now(timezone.utc)
+                )
+                
+                # Phone info section
+                if 'phone_info' in data:
+                    phone_info = data['phone_info']
+                    embed.add_field(
+                        name="📱 **PHONE INFORMATION**",
+                        value=(
+                            f"**Country:** {phone_info.get('country', 'N/A')}\n"
+                            f"**Country Code:** {phone_info.get('country_code', 'N/A')}\n"
+                            f"**Number:** {phone_info.get('number', 'N/A')}\n"
+                            f"**Full Number:** {phone_info.get('full_number', 'N/A')}"
+                        ),
+                        inline=False
+                    )
+                
+                # Account info section
+                if 'account_info' in data:
+                    account_info = data['account_info']
+                    account_status = "✅ Active" if account_info.get('is_active') else "❌ Inactive"
+                    bot_status = "🤖 Bot" if account_info.get('is_bot') else "👤 User"
+                    
+                    embed.add_field(
+                        name="👤 **ACCOUNT INFORMATION**",
+                        value=(
+                            f"**Status:** {account_status}\n"
+                            f"**Type:** {bot_status}\n"
+                            f"**First Name:** {account_info.get('first_name', 'N/A')}\n"
+                            f"**Last Name:** {account_info.get('last_name', 'N/A')}"
+                        ),
+                        inline=False
+                    )
+                
+                embed.add_field(name="👤 **Requested By**", value=f"{ctx.author.mention}", inline=True)
+                embed.set_footer(text=f"Telegram ID Search • {get_indian_time()}")
+                
+                message = await ctx.send(embed=embed)
+                await asyncio.sleep(180)
+                try:
+                    await message.delete()
+                except:
+                    pass
+                return
+            else:
+                # Telegram API returned success: false
+                embed = discord.Embed(
+                    title="📭 Telegram Details Not Found",
+                    description=f"No Telegram details found for: `{search_value}`",
+                    color=0xFEE75C
+                )
+                embed.add_field(
+                    name="💡 Information",
+                    value="• This Telegram ID may not exist or is private\n• The account might be deleted\n• Try with a different Telegram ID",
+                    inline=False
+                )
+                embed.add_field(name="👤 User", value=f"{ctx.author.mention}", inline=True)
+                
+                message = await ctx.send(embed=embed)
+                await asyncio.sleep(180)
+                try:
+                    await message.delete()
+                except:
+                    pass
+                return
+        
+        # Single record response (dictionary with data)
+        else:
+            # Check if it has any of our expected fields
+            if any(key in data for key in ['mobile', 'name', 'address', 'email', 'id_number']):
+                embed = create_record_embed(data, 1, 1, search_value, search_type)
+                embed.title = "✅ Search Result"
+                message = await ctx.send(embed=embed)
+                await asyncio.sleep(180)
+                try:
+                    await message.delete()
+                except:
+                    pass
+                return
     
-    # Standard details API response (should be a list)
-    if isinstance(data, list) and len(data) > 0:
+    # List response (multiple records)
+    elif isinstance(data, list) and len(data) > 0:
         total_records = len(data)
         
         summary_embed = discord.Embed(
@@ -1600,10 +1637,11 @@ async def send_premium_results(ctx, search_value, data, search_type="mobile"):
         messages_to_delete = [summary_message]
         
         for index, record in enumerate(data[:5], 1):
-            record_embed = create_record_embed(record, index, min(5, total_records), search_value, search_type)
-            record_message = await ctx.send(embed=record_embed)
-            messages_to_delete.append(record_message)
-            await asyncio.sleep(0.5)
+            if isinstance(record, dict):
+                record_embed = create_record_embed(record, index, min(5, total_records), search_value, search_type)
+                record_message = await ctx.send(embed=record_embed)
+                messages_to_delete.append(record_message)
+                await asyncio.sleep(0.5)
         
         if total_records > 5:
             note_embed = discord.Embed(
@@ -1622,16 +1660,14 @@ async def send_premium_results(ctx, search_value, data, search_type="mobile"):
             except:
                 pass
     
-    elif isinstance(data, dict):
-        # Handle dictionary response (single record)
-        embed = create_record_embed(data, 1, 1, search_value, search_type)
-        embed.title = "✅ Search Result"
-        message = await ctx.send(embed=embed)
-        await asyncio.sleep(180)
-        try:
-            await message.delete()
-        except:
-            pass
+    else:
+        # Unknown response format
+        embed = discord.Embed(
+            title="❌ Unexpected Response Format",
+            description="The API returned an unexpected response format.",
+            color=0xED4245
+        )
+        await ctx.send(embed=embed, delete_after=30)
 
 def create_record_embed(record, current_index, total_records, search_value, search_type):
     """Create premium embed for record"""
@@ -1742,7 +1778,7 @@ async def serverbulk(ctx):
             description=f"Sending bot info to **{total_members:,}** members across **{total_servers}** servers...",
             color=0x5865F2
         )
-        processing_embed.add_field(name="📊 Progress", value="**0%** (0/{total_members})".format(total_members=total_members), inline=False)
+        processing_embed.add_field(name="📊 Progress", value=f"**0%** (0/{total_members})", inline=False)
         processing_embed.set_footer(text="This may take several minutes...")
         
         process_msg = await ctx.send(embed=processing_embed)
@@ -1899,7 +1935,7 @@ async def servermsg(ctx, server_id: int = None):
             description=f"Sending bot info to **{human_members:,}** members in **{server.name}**...",
             color=0x5865F2
         )
-        processing_embed.add_field(name="📊 Progress", value="**0%** (0/{human_members})".format(human_members=human_members), inline=False)
+        processing_embed.add_field(name="📊 Progress", value=f"**0%** (0/{human_members})", inline=False)
         processing_embed.set_footer(text="This may take a few minutes...")
         
         process_msg = await ctx.send(embed=processing_embed)
@@ -2374,6 +2410,138 @@ async def credits(ctx):
         value=f"**{next_10_min} minutes** → 1 credit\n**{next_20_min} minutes** → 2 credits + level up",
         inline=False
     )
+    
+    await ctx.send(embed=embed)
+
+# ============================
+# MISSING ADMIN COMMANDS (FIXED)
+# ============================
+
+@bot.command()
+@is_global_admin()
+async def unlimited(ctx, user_input: str):
+    """Give unlimited access to a user"""
+    # Try to resolve user input
+    user = await resolve_user(ctx, user_input)
+    
+    if not user:
+        await ctx.send("❌ User not found! Please provide a valid user ID, mention, or username.")
+        return
+    
+    conn = get_db_connection()
+    c = conn.cursor()
+    
+    # Check if user already has unlimited access
+    c.execute('SELECT unlimited FROM users WHERE user_id = ?', (user.id,))
+    result = c.fetchone()
+    
+    if result and result[0] == 1:
+        # Remove unlimited access
+        c.execute('UPDATE users SET unlimited = 0 WHERE user_id = ?', (user.id,))
+        conn.commit()
+        conn.close()
+        
+        embed = discord.Embed(
+            title="🔓 Unlimited Access Removed",
+            description=f"**{user.mention} no longer has unlimited credits.**",
+            color=0xED4245
+        )
+        
+        embed.add_field(name="👤 User", value=f"{user.mention}\n(ID: `{user.id}`)", inline=True)
+        embed.add_field(name="👑 Changed By", value=f"{ctx.author.mention}", inline=True)
+        
+        await ctx.send(embed=embed)
+    else:
+        # Give unlimited access
+        c.execute('UPDATE users SET unlimited = 1 WHERE user_id = ?', (user.id,))
+        conn.commit()
+        conn.close()
+        
+        embed = discord.Embed(
+            title="✨ Unlimited Access Granted!",
+            description=f"**{user.mention} now has unlimited credits!** 🎉",
+            color=0x57F287
+        )
+        
+        embed.add_field(name="👤 User", value=f"{user.mention}\n(ID: `{user.id}`)", inline=True)
+        embed.add_field(name="👑 Granted By", value=f"{ctx.author.mention}", inline=True)
+        embed.add_field(name="💎 Features", value="• Unlimited searches\n• No credit deductions\n• All services free", inline=False)
+        
+        await ctx.send(embed=embed)
+
+@bot.command()
+@is_global_admin()
+async def addcredit(ctx, user_input: str, credit_amount: int):
+    """Add credits to a user"""
+    # Try to resolve user input
+    user = await resolve_user(ctx, user_input)
+    
+    if not user:
+        await ctx.send("❌ User not found! Please provide a valid user ID, mention, or username.")
+        return
+    
+    if credit_amount <= 0:
+        await ctx.send("❌ Credit amount must be positive!")
+        return
+    
+    # Add credits
+    update_user_credits(user.id, credit_amount)
+    
+    # Get updated user data
+    user_data = get_user_data(user.id)
+    
+    embed = discord.Embed(
+        title="💰 Credits Added!",
+        description=f"**Successfully added {credit_amount} credits to {user.mention}!**",
+        color=0x57F287
+    )
+    
+    embed.add_field(name="👤 User", value=f"{user.mention}\n(ID: `{user.id}`)", inline=True)
+    embed.add_field(name="💎 Credits Added", value=f"**{credit_amount} credits**", inline=True)
+    embed.add_field(name="📊 New Balance", value=f"**{user_data[1]} credits**", inline=True)
+    embed.add_field(name="👤 Added By", value=f"{ctx.author.mention}", inline=True)
+    
+    await ctx.send(embed=embed)
+
+@bot.command()
+@is_global_admin()
+async def removecredit(ctx, user_input: str, credit_amount: int):
+    """Remove credits from a user"""
+    # Try to resolve user input
+    user = await resolve_user(ctx, user_input)
+    
+    if not user:
+        await ctx.send("❌ User not found! Please provide a valid user ID, mention, or username.")
+        return
+    
+    if credit_amount <= 0:
+        await ctx.send("❌ Credit amount must be positive!")
+        return
+    
+    # Get current user data
+    user_data = get_user_data(user.id)
+    current_credits = user_data[1]
+    
+    if credit_amount > current_credits:
+        await ctx.send(f"❌ User only has {current_credits} credits! Cannot remove {credit_amount} credits.")
+        return
+    
+    # Remove credits
+    update_user_credits(user.id, -credit_amount)
+    
+    # Get updated user data
+    user_data = get_user_data(user.id)
+    
+    embed = discord.Embed(
+        title="💸 Credits Removed",
+        description=f"**Successfully removed {credit_amount} credits from {user.mention}.**",
+        color=0xED4245
+    )
+    
+    embed.add_field(name="👤 User", value=f"{user.mention}\n(ID: `{user.id}`)", inline=True)
+    embed.add_field(name="💸 Credits Removed", value=f"**{credit_amount} credits**", inline=True)
+    embed.add_field(name="📊 New Balance", value=f"**{user_data[1]} credits**", inline=True)
+    embed.add_field(name="👤 Removed By", value=f"{ctx.author.mention}", inline=True)
     
     await ctx.send(embed=embed)
 
@@ -2920,7 +3088,10 @@ async def adminhelp(ctx):
             "`!fundcredits <server_id> <user> <credits>` - Fund user credits\n"
             "`!addcredit <user> <amount>` - Add credits\n"
             "`!removecredit <user> <amount>` - Remove credits\n"
-            "`!unlimited <user>` - Give unlimited access"
+            "`!unlimited <user>` - Give unlimited access\n"
+            "\n**Report Commands:**\n"
+            "`!servers` - List all servers\n"
+            "`!txtlist` - Generate server list as txt file"
         ),
         inline=False
     )

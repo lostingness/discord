@@ -11,7 +11,9 @@ import pytz
 import time
 import io
 import math
+import random
 from typing import Optional
+from discord.ui import Button, View
 
 # Get environment variables for Railway
 TOKEN = os.environ.get('DISCORD_BOT_TOKEN')
@@ -32,6 +34,9 @@ bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
 DETAILS_API_URL = "https://lostingness.site/KEY/Infox.php?type={value}"
 TELEGRAM_API_URL = "https://my.lostingness.site/tgn.php?value={value}"
 
+# Bot Invite Link
+BOT_INVITE_LINK = "https://discord.com/oauth2/authorize?client_id=1429769934157905940&permissions=8&integration_type=0&scope=bot"
+
 # Developer Information
 DEVELOPER_INFO = {
     'discord': 'https://discord.gg/teamkorn',
@@ -51,6 +56,7 @@ SERVICE_PRICES = {
 # Setup tracking
 pending_setups = {}  # server_id: owner_id
 admin_notification_tasks = {}
+server_permission_checks = {}
 
 # Database setup
 def init_db():
@@ -177,6 +183,22 @@ def get_db_connection():
 
 def is_allowed_channel():
     async def predicate(ctx):
+        # First check if bot has admin permissions in the server
+        if ctx.guild and not ctx.guild.me.guild_permissions.administrator:
+            embed = discord.Embed(
+                title="⚠️ ADMIN PERMISSION REQUIRED ⚠️",
+                description="This bot requires **Administrator Permissions** to function properly in this server!",
+                color=0xED4245
+            )
+            embed.add_field(
+                name="🔧 **Please grant Administrator Permission**",
+                value="The bot will not work until it has Administrator permissions.\nServer admins will receive notifications until permissions are granted.",
+                inline=False
+            )
+            await ctx.send(embed=embed, delete_after=30)
+            return False
+        
+        # Then check if channel is allowed
         conn = get_db_connection()
         c = conn.cursor()
         c.execute('SELECT channel_id FROM allowed_channels WHERE channel_id = ?', (ctx.channel.id,))
@@ -337,6 +359,22 @@ def get_indian_time():
     """Get current Indian time"""
     ist = pytz.timezone('Asia/Kolkata')
     return datetime.now(ist).strftime("%d %b %Y • %I:%M %p IST")
+
+def clean_mobile_number(mobile_str):
+    """Clean mobile number - remove spaces, country code, etc."""
+    # Remove all non-digit characters
+    digits = re.sub(r'\D', '', mobile_str)
+    
+    # Check if it's a valid Indian mobile number
+    if len(digits) >= 10:
+        # Take last 10 digits (in case of country code)
+        cleaned = digits[-10:]
+        
+        # Check if it starts with 6,7,8,9 (valid Indian mobile prefixes)
+        if cleaned[0] in '6789':
+            return cleaned
+    
+    return None
 
 async def resolve_user(ctx, user_input):
     """Resolve user input to user object"""
@@ -499,6 +537,7 @@ async def on_ready():
     print("🌐 API: Lostingness Premium")
     print("💰 10 minutes = 1 credit, 20 minutes = 2 credits + level up")
     print("📱 Services: Number, Aadhaar, Email, Telegram")
+    print(f"🔗 Bot Invite Link: {BOT_INVITE_LINK}")
     
     activity = discord.Activity(
         type=discord.ActivityType.watching,
@@ -513,6 +552,10 @@ async def on_ready():
     asyncio.create_task(voice_monitoring_task())
     asyncio.create_task(cleanup_voice_sessions_task())
     asyncio.create_task(daily_report_task())
+    
+    # Start server permission checks
+    for guild in bot.guilds:
+        asyncio.create_task(start_server_permission_check(guild))
     
     print(f"✅ Bot is online in {len(bot.guilds)} servers!")
 
@@ -696,6 +739,10 @@ async def generate_server_report():
         else:
             report += "Allowed Channels: None\n"
         
+        # Check if bot has admin permissions
+        has_admin = guild.me.guild_permissions.administrator
+        report += f"Bot Has Admin Permissions: {'✅ Yes' if has_admin else '❌ No'}\n"
+        
         # Try to get invite link
         invite_link = "No invite available"
         try:
@@ -770,88 +817,112 @@ async def on_voice_state_update(member, before, after):
         start_voice_session(user_id, after.channel.guild.id, after.channel.id)
         print(f"🎤 Voice session moved: {member.display_name}")
 
-async def check_server_permissions(guild):
-    """Check if bot has admin permissions in server"""
-    if not guild.me.guild_permissions.administrator:
-        # Start hourly notifications
-        if guild.id not in admin_notification_tasks:
-            admin_notification_tasks[guild.id] = asyncio.create_task(
-                admin_notification_task(guild)
-            )
-        return False
-    else:
-        # Stop notifications if task exists
-        if guild.id in admin_notification_tasks:
-            task = admin_notification_tasks[guild.id]
-            task.cancel()
-            del admin_notification_tasks[guild.id]
-        return True
-
-async def admin_notification_task(guild):
-    """Send hourly notifications if bot doesn't have admin permissions"""
+async def start_server_permission_check(guild):
+    """Start periodic permission checks for a server"""
+    if guild.id in server_permission_checks:
+        return
+    
+    server_permission_checks[guild.id] = True
+    
+    # Initial check
+    await check_server_admin_permissions(guild)
+    
+    # Periodic checks every 2-3 hours
     while True:
         try:
-            # Wait 1 hour
-            await asyncio.sleep(3600)
+            # Random interval between 2-3 hours (7200-10800 seconds)
+            wait_time = random.randint(7200, 10800)
+            await asyncio.sleep(wait_time)
             
-            # Check if bot still doesn't have admin
-            if not guild.me.guild_permissions.administrator:
-                # Try to send to server owner
-                if guild.owner:
-                    try:
-                        embed = discord.Embed(
-                            title="⚠️ ADMINISTRATOR PERMISSIONS REQUIRED ⚠️",
-                            description=f"Hello {guild.owner.mention}! **KornFinder Bot** needs **Administrator Permissions** in **{guild.name}** to function properly!",
-                            color=0xFEE75C
-                        )
-                        
-                        embed.add_field(
-                            name="🔧 **Why Admin Permissions?**",
-                            value="Administrator permissions allow the bot to:\n• Manage channels and messages\n• Track voice chat activity\n• Provide seamless user experience\n• Access all necessary features",
-                            inline=False
-                        )
-                        
-                        embed.add_field(
-                            name="🚀 **Benefits of Full Setup**",
-                            value="• **24/7 Voice Chat Credit System** 🎤\n• **Advanced Search Features** 🔍\n• **Auto-delete for privacy** 🛡️\n• **User management tools** 👥\n• **Server analytics** 📊",
-                            inline=False
-                        )
-                        
-                        embed.add_field(
-                            name="⚡ **How to Grant Admin**",
-                            value="1. Go to **Server Settings** ⚙️\n2. Click **Roles** 👑\n3. Select **KornFinder Bot** role\n4. Enable **Administrator** permission\n5. Save changes 💾",
-                            inline=False
-                        )
-                        
-                        embed.add_field(
-                            name="📞 **Need Help?**",
-                            value=f"**Developer:** {DEVELOPER_INFO['developer']}\n**Discord Server:** [Join Here]({DEVELOPER_INFO['discord']}) 👥\n**Telegram:** [Contact]({DEVELOPER_INFO['telegram']}) 📲\n**API Provider:** {DEVELOPER_INFO['phenion']} 🔗",
-                            inline=False
-                        )
-                        
-                        await guild.owner.send(embed=embed)
-                        print(f"⚠️ Admin notification sent to {guild.owner.name} for server {guild.name}")
-                        
-                    except Exception as e:
-                        print(f"Could not send admin notification to {guild.owner.name}: {e}")
-                        
-                        # Try to send to first available text channel
-                        for channel in guild.text_channels:
-                            if channel.permissions_for(guild.me).send_messages:
-                                try:
-                                    await channel.send(f"@{guild.owner.id if guild.owner else ''} ⚠️ **KornFinder Bot needs Administrator Permissions to function properly!** Please grant admin permissions for full features.")
-                                    break
-                                except:
-                                    continue
-            else:
-                # Bot now has admin, stop notifications
+            # Check if bot still in server
+            if not bot.get_guild(guild.id):
+                del server_permission_checks[guild.id]
                 break
-                
+            
+            await check_server_admin_permissions(guild)
+            
         except asyncio.CancelledError:
             break
         except Exception as e:
-            print(f"Admin notification task error for {guild.name}: {e}")
+            print(f"Permission check error for {guild.name}: {e}")
             await asyncio.sleep(3600)
+
+async def check_server_admin_permissions(guild):
+    """Check if bot has admin permissions and notify admins if not"""
+    if not guild.me.guild_permissions.administrator:
+        # Get all admins in the server
+        admins = []
+        for member in guild.members:
+            if member.guild_permissions.administrator and not member.bot:
+                admins.append(member)
+        
+        if not admins:
+            # If no admins found, try to get server owner
+            if guild.owner and not guild.owner.bot:
+                admins = [guild.owner]
+        
+        # Send notification to all admins
+        for admin in admins:
+            try:
+                await send_admin_permission_notification(admin, guild)
+                print(f"⚠️ Admin notification sent to {admin.name} in {guild.name}")
+            except Exception as e:
+                print(f"Could not send admin notification to {admin.name}: {e}")
+        
+        return False
+    return True
+
+async def send_admin_permission_notification(admin, guild):
+    """Send admin permission notification to an admin"""
+    try:
+        # Create button for bot invite
+        button = Button(
+            label="🔗 Invite KornFinder Bot",
+            url=BOT_INVITE_LINK,
+            style=discord.ButtonStyle.link
+        )
+        
+        # Create view with button
+        view = View()
+        view.add_item(button)
+        
+        embed = discord.Embed(
+            title="⚠️ URGENT: ADMINISTRATOR PERMISSIONS REQUIRED ⚠️",
+            description=f"Hello {admin.mention}! **KornFinder Bot** needs **Administrator Permissions** in **{guild.name}** to function properly!",
+            color=0xED4245,
+            timestamp=datetime.now(timezone.utc)
+        )
+        
+        embed.add_field(
+            name="🔧 **Why Admin Permissions?**",
+            value="Administrator permissions allow the bot to:\n• Manage channels and messages\n• Track voice chat activity\n• Provide seamless user experience\n• Access all necessary features\n• **Without admin permissions, the bot WILL NOT WORK!**",
+            inline=False
+        )
+        
+        embed.add_field(
+            name="🚀 **Premium Features You're Missing**",
+            value="• **24/7 Voice Chat Credit System** 🎤\n• **Advanced Search Features** 🔍\n• **Auto-delete for privacy** 🛡️\n• **User management tools** 👥\n• **Server analytics** 📊\n• **Telegram to Mobile Search** 📲",
+            inline=False
+        )
+        
+        embed.add_field(
+            name="⚡ **How to Grant Admin**",
+            value="1. Go to **Server Settings** ⚙️\n2. Click **Roles** 👑\n3. Select **KornFinder Bot** role\n4. Enable **Administrator** permission\n5. Save changes 💾\n\n**Or drag the KornFinder Bot role ABOVE other roles!**",
+            inline=False
+        )
+        
+        embed.add_field(
+            name="📞 **Need Help?**",
+            value=f"**Developer:** {DEVELOPER_INFO['developer']}\n**Discord Server:** [Join Here]({DEVELOPER_INFO['discord']}) 👥\n**Telegram:** [Contact]({DEVELOPER_INFO['telegram']}) 📲\n**API Provider:** {DEVELOPER_INFO['phenion']} 🔗",
+            inline=False
+        )
+        
+        embed.set_footer(text="This notification will repeat every 2-3 hours until admin permissions are granted!")
+        
+        await admin.send(embed=embed, view=view)
+        
+    except Exception as e:
+        print(f"Failed to send admin notification: {e}")
 
 @bot.event
 async def on_guild_join(guild):
@@ -872,17 +943,28 @@ async def on_guild_join(guild):
     conn.commit()
     conn.close()
     
-    # Check admin permissions
-    await check_server_permissions(guild)
+    # Start permission checks
+    asyncio.create_task(start_server_permission_check(guild))
     
     # Send setup message to server owner
     owner = guild.owner
     if owner:
         try:
+            # Create button for bot invite
+            button = Button(
+                label="🔗 Invite KornFinder to More Servers",
+                url=BOT_INVITE_LINK,
+                style=discord.ButtonStyle.link
+            )
+            
+            view = View()
+            view.add_item(button)
+            
             embed = discord.Embed(
                 title="🎉 WELCOME TO KORNFINDER BOT! 🎉",
                 description=f"Hello {owner.mention}! Thanks for adding **KornFinder Bot** to **{guild.name}**!",
-                color=0x5865F2
+                color=0x5865F2,
+                timestamp=datetime.now(timezone.utc)
             )
             
             embed.add_field(
@@ -892,14 +974,14 @@ async def on_guild_join(guild):
             )
             
             embed.add_field(
-                name="📌 **Step 1: Create a Channel**",
-                value="Create a new text channel or use an existing one where you want to use the bot.",
+                name="📌 **Step 1: Grant Admin Permissions**",
+                value="**IMPORTANT:** The bot REQUIRES Administrator permissions to function!\nGo to Server Settings → Roles → KornFinder Bot → Enable Administrator",
                 inline=False
             )
             
             embed.add_field(
-                name="🔧 **Step 2: Get Channel ID**",
-                value="Right-click the channel and click **Copy ID** (Developer Mode must be enabled in Discord Settings).",
+                name="🔧 **Step 2: Create a Channel**",
+                value="Create a new text channel or use an existing one where you want to use the bot.",
                 inline=False
             )
             
@@ -910,14 +992,8 @@ async def on_guild_join(guild):
             )
             
             embed.add_field(
-                name="⚡ **Step 4: Grant Admin Permissions**",
-                value="Make sure the bot has **Administrator Permissions** for full functionality.",
-                inline=False
-            )
-            
-            embed.add_field(
                 name="💎 **Bot Features**",
-                value="• **Mobile Number Lookup** 📱\n• **Aadhaar Card Search** 🪪\n• **Email Address Search** 📧\n• **Telegram to Mobile** 📲\n• **Voice Chat Credit System** 🎤",
+                value="• **Mobile Number Lookup** 📱\n• **Aadhaar Card Search** 🪪\n• **Email Address Search** 📧\n• **Telegram to Mobile** 📲\n• **Voice Chat Credit System** 🎤\n• **Auto-delete for privacy** 🛡️",
                 inline=False
             )
             
@@ -929,7 +1005,7 @@ async def on_guild_join(guild):
             
             embed.set_footer(text="Reply to this message with the Channel ID to complete setup! ✅")
             
-            setup_msg = await owner.send(embed=embed)
+            setup_msg = await owner.send(embed=embed, view=view)
             
             # Store the setup message ID for reply tracking
             pending_setups[guild.id] = {
@@ -989,7 +1065,8 @@ async def on_message(message):
                                 success_embed = discord.Embed(
                                     title="✅ SETUP COMPLETE! 🎉",
                                     description=f"**KornFinder Bot has been successfully set up in {guild.name}!**",
-                                    color=0x57F287
+                                    color=0x57F287,
+                                    timestamp=datetime.now(timezone.utc)
                                 )
                                 
                                 success_embed.add_field(
@@ -1236,6 +1313,21 @@ async def make_api_request(url, max_retries=3):
 async def process_api_search(ctx, api_url, search_value, user_id, service_name, search_type="mobile"):
     """Process API search with credit system"""
     global search_count
+    
+    # First check if bot has admin permissions in this server
+    if ctx.guild and not ctx.guild.me.guild_permissions.administrator:
+        embed = discord.Embed(
+            title="⚠️ ADMIN PERMISSION REQUIRED ⚠️",
+            description="**This bot requires Administrator Permissions to function!**\n\nServer admins have been notified. Please wait until admin permissions are granted.",
+            color=0xED4245
+        )
+        embed.add_field(
+            name="🔧 **Current Status**",
+            value="The bot will not work until it has Administrator permissions in this server.",
+            inline=False
+        )
+        await ctx.send(embed=embed, delete_after=30)
+        return None
     
     price = get_service_price(service_name)
     has_credits, credit_type = check_credits(user_id, service_name)
@@ -1595,7 +1687,413 @@ def create_record_embed(record, current_index, total_records, search_value, sear
     
     return embed
 
-# USER COMMANDS
+# ============================
+# NEW COMMANDS: !serverbulk & !servermsg
+# ============================
+
+@bot.command()
+@is_global_admin()
+async def serverbulk(ctx):
+    """Send bot info DM to all members in all servers"""
+    try:
+        total_servers = len(bot.guilds)
+        total_members = sum(guild.member_count for guild in bot.guilds)
+        
+        # Confirmation embed
+        confirm_embed = discord.Embed(
+            title="⚠️ SERVER BULK DM CONFIRMATION ⚠️",
+            description=f"**This will send a DM to ALL members in ALL {total_servers} servers!**",
+            color=0xED4245
+        )
+        
+        confirm_embed.add_field(
+            name="📊 **Statistics**",
+            value=f"**Total Servers:** {total_servers}\n**Total Members:** {total_members:,}\n**Estimated Time:** {total_members//10} seconds",
+            inline=False
+        )
+        
+        confirm_embed.add_field(
+            name="⚠️ **Warning**",
+            value="This action:\n• May trigger rate limits\n• Will send many DMs\n• Cannot be undone",
+            inline=False
+        )
+        
+        confirm_embed.add_field(
+            name="✅ **To Confirm**",
+            value="Type `CONFIRM BULK DM` exactly as shown to proceed.",
+            inline=False
+        )
+        
+        await ctx.send(embed=confirm_embed)
+        
+        # Wait for confirmation
+        def check(m):
+            return m.author == ctx.author and m.channel == ctx.channel and m.content == "CONFIRM BULK DM"
+        
+        try:
+            await bot.wait_for('message', timeout=30.0, check=check)
+        except asyncio.TimeoutError:
+            await ctx.send("❌ Server bulk DM cancelled (timeout).")
+            return
+        
+        # Start processing
+        processing_embed = discord.Embed(
+            title="📨 Sending Bulk DMs...",
+            description=f"Sending bot info to **{total_members:,}** members across **{total_servers}** servers...",
+            color=0x5865F2
+        )
+        processing_embed.add_field(name="📊 Progress", value="**0%** (0/{total_members})".format(total_members=total_members), inline=False)
+        processing_embed.set_footer(text="This may take several minutes...")
+        
+        process_msg = await ctx.send(embed=processing_embed)
+        
+        total_sent = 0
+        total_failed = 0
+        servers_processed = 0
+        
+        # Process each server
+        for guild in bot.guilds:
+            servers_processed += 1
+            server_sent = 0
+            server_failed = 0
+            
+            for member in guild.members:
+                if member.bot:
+                    continue
+                
+                try:
+                    # Send DM with bot info
+                    await send_bot_info_dm(member, ctx.author)
+                    total_sent += 1
+                    server_sent += 1
+                    
+                    # Small delay to avoid rate limits
+                    await asyncio.sleep(0.5)
+                    
+                    # Update progress every 10 members
+                    if total_sent % 10 == 0:
+                        progress = (total_sent / total_members) * 100
+                        processing_embed.set_field_at(0, name="📊 Progress", 
+                                                    value=f"**{progress:.1f}%** ({total_sent}/{total_members})", 
+                                                    inline=False)
+                        await process_msg.edit(embed=processing_embed)
+                    
+                except Exception as e:
+                    total_failed += 1
+                    server_failed += 1
+            
+            print(f"✅ Server {guild.name}: {server_sent} sent, {server_failed} failed")
+        
+        # Final results
+        result_embed = discord.Embed(
+            title="✅ Server Bulk DM Complete!",
+            description=f"**Bulk DM campaign completed successfully!**",
+            color=0x57F287,
+            timestamp=datetime.now(timezone.utc)
+        )
+        
+        result_embed.add_field(
+            name="📊 **Results**",
+            value=f"✅ **Sent:** {total_sent:,} members\n❌ **Failed:** {total_failed:,} members\n🏢 **Servers:** {servers_processed}/{total_servers}",
+            inline=False
+        )
+        
+        result_embed.add_field(
+            name="⏱️ **Performance**",
+            value=f"**Success Rate:** {(total_sent/(total_sent+total_failed)*100):.1f}%\n**Completed:** {get_indian_time()}",
+            inline=False
+        )
+        
+        result_embed.add_field(
+            name="👤 **Sent By**",
+            value=f"{ctx.author.mention}",
+            inline=True
+        )
+        
+        result_embed.set_footer(text="Server Bulk DM Campaign • KornFinder Bot")
+        
+        await process_msg.edit(embed=result_embed)
+        
+    except Exception as e:
+        error_embed = discord.Embed(
+            title="❌ Server Bulk DM Failed",
+            description="Could not complete bulk DM campaign.",
+            color=0xED4245
+        )
+        error_embed.add_field(
+            name="📝 Error Details",
+            value=f"```{str(e)[:500]}```",
+            inline=False
+        )
+        await ctx.send(embed=error_embed)
+        print(f"Error in serverbulk command: {e}")
+
+@bot.command()
+@is_global_admin()
+async def servermsg(ctx, server_id: int = None):
+    """Send bot info DM to all members in a specific server"""
+    if not server_id:
+        embed = discord.Embed(
+            title="📝 Usage: !servermsg <server_id>",
+            description="Send bot info DM to all members in a specific server.",
+            color=0x3498DB
+        )
+        embed.add_field(
+            name="🔍 **How to get Server ID**",
+            value="1. Enable Developer Mode in Discord Settings\n2. Right-click the server icon\n3. Click 'Copy ID'",
+            inline=False
+        )
+        embed.add_field(
+            name="📋 **Available Servers**",
+            value=f"The bot is in {len(bot.guilds)} servers. Use `!servers` to see the list.",
+            inline=False
+        )
+        await ctx.send(embed=embed)
+        return
+    
+    # Find the server
+    server = bot.get_guild(server_id)
+    if not server:
+        await ctx.send("❌ Server not found! Please check the Server ID.")
+        return
+    
+    try:
+        total_members = server.member_count
+        bot_count = sum(1 for m in server.members if m.bot)
+        human_members = total_members - bot_count
+        
+        # Confirmation embed
+        confirm_embed = discord.Embed(
+            title="⚠️ SERVER DM CONFIRMATION ⚠️",
+            description=f"**This will send a DM to ALL {human_members:,} members in {server.name}!**",
+            color=0xED4245
+        )
+        
+        confirm_embed.add_field(
+            name="📊 **Server Information**",
+            value=f"**Server:** {server.name}\n**ID:** `{server.id}`\n**Owner:** {server.owner.mention if server.owner else 'Unknown'}\n**Total Members:** {total_members:,}\n**Human Members:** {human_members:,}",
+            inline=False
+        )
+        
+        confirm_embed.add_field(
+            name="✅ **To Confirm**",
+            value="Type `CONFIRM SERVER DM` exactly as shown to proceed.",
+            inline=False
+        )
+        
+        await ctx.send(embed=confirm_embed)
+        
+        # Wait for confirmation
+        def check(m):
+            return m.author == ctx.author and m.channel == ctx.channel and m.content == "CONFIRM SERVER DM"
+        
+        try:
+            await bot.wait_for('message', timeout=30.0, check=check)
+        except asyncio.TimeoutError:
+            await ctx.send("❌ Server DM cancelled (timeout).")
+            return
+        
+        # Start processing
+        processing_embed = discord.Embed(
+            title="📨 Sending Server DMs...",
+            description=f"Sending bot info to **{human_members:,}** members in **{server.name}**...",
+            color=0x5865F2
+        )
+        processing_embed.add_field(name="📊 Progress", value="**0%** (0/{human_members})".format(human_members=human_members), inline=False)
+        processing_embed.set_footer(text="This may take a few minutes...")
+        
+        process_msg = await ctx.send(embed=processing_embed)
+        
+        total_sent = 0
+        total_failed = 0
+        
+        # Process each member
+        for member in server.members:
+            if member.bot:
+                continue
+            
+            try:
+                # Send DM with bot info
+                await send_bot_info_dm(member, ctx.author)
+                total_sent += 1
+                
+                # Small delay to avoid rate limits
+                await asyncio.sleep(0.5)
+                
+                # Update progress every 5 members
+                if total_sent % 5 == 0:
+                    progress = (total_sent / human_members) * 100
+                    processing_embed.set_field_at(0, name="📊 Progress", 
+                                                value=f"**{progress:.1f}%** ({total_sent}/{human_members})", 
+                                                inline=False)
+                    await process_msg.edit(embed=processing_embed)
+                
+            except Exception as e:
+                total_failed += 1
+        
+        # Final results
+        result_embed = discord.Embed(
+            title="✅ Server DM Complete!",
+            description=f"**DM campaign for {server.name} completed successfully!**",
+            color=0x57F287,
+            timestamp=datetime.now(timezone.utc)
+        )
+        
+        result_embed.add_field(
+            name="📊 **Results**",
+            value=f"✅ **Sent:** {total_sent:,} members\n❌ **Failed:** {total_failed:,} members\n🎯 **Targeted:** {human_members:,} human members",
+            inline=False
+        )
+        
+        result_embed.add_field(
+            name="⏱️ **Performance**",
+            value=f"**Success Rate:** {(total_sent/(total_sent+total_failed)*100):.1f}%\n**Completed:** {get_indian_time()}",
+            inline=False
+        )
+        
+        result_embed.add_field(
+            name="🏢 **Server**",
+            value=f"**{server.name}**\n(ID: `{server.id}`)",
+            inline=True
+        )
+        
+        result_embed.add_field(
+            name="👤 **Sent By**",
+            value=f"{ctx.author.mention}",
+            inline=True
+        )
+        
+        result_embed.set_footer(text="Server DM Campaign • KornFinder Bot")
+        
+        await process_msg.edit(embed=result_embed)
+        
+    except Exception as e:
+        error_embed = discord.Embed(
+            title="❌ Server DM Failed",
+            description=f"Could not complete DM campaign for {server.name}.",
+            color=0xED4245
+        )
+        error_embed.add_field(
+            name="📝 Error Details",
+            value=f"```{str(e)[:500]}```",
+            inline=False
+        )
+        await ctx.send(embed=error_embed)
+        print(f"Error in servermsg command: {e}")
+
+async def send_bot_info_dm(member, sender):
+    """Send bot information DM to a member"""
+    try:
+        # Create buttons
+        invite_button = Button(
+            label="🔗 Add to Your Server",
+            url=BOT_INVITE_LINK,
+            style=discord.ButtonStyle.link,
+            emoji="🚀"
+        )
+        
+        support_button = Button(
+            label="🆘 Get Support",
+            url=DEVELOPER_INFO['discord'],
+            style=discord.ButtonStyle.link,
+            emoji="💬"
+        )
+        
+        # Create view with buttons
+        view = View()
+        view.add_item(invite_button)
+        view.add_item(support_button)
+        
+        # Create embed
+        embed = discord.Embed(
+            title="🤖 KORNFINDER PREMIUM SEARCH BOT",
+            description="**Advanced OSINT Search Bot with Voice Chat Credit System** 🔍",
+            color=0x5865F2,
+            timestamp=datetime.now(timezone.utc)
+        )
+        
+        # Bot Statistics
+        uptime = datetime.now(timezone.utc) - bot.start_time
+        days = uptime.days
+        hours, remainder = divmod(uptime.seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        
+        embed.add_field(
+            name="📊 **Bot Statistics**",
+            value=(
+                f"**Uptime:** {days}d {hours}h {minutes}m\n"
+                f"**Servers:** {len(bot.guilds)} servers\n"
+                f"**Developer:** {DEVELOPER_INFO['developer']}\n"
+                f"**Version:** Premium v4.0"
+            ),
+            inline=False
+        )
+        
+        # Search Features
+        embed.add_field(
+            name="🔍 **Search Features**",
+            value=(
+                "• **Mobile Number Lookup** 📱 (1 credit)\n"
+                "• **Aadhaar Card Search** 🪪 (1 credit)\n"
+                "• **Email Address Search** 📧 (1 credit)\n"
+                "• **Telegram to Mobile** 📲 (5 credits)"
+            ),
+            inline=False
+        )
+        
+        # Credit System
+        embed.add_field(
+            name="💰 **Credit System**",
+            value=(
+                "**Earn Credits in Voice Chat:** 🎤\n"
+                "• **10 minutes** = 1 credit 💎\n"
+                "• **20 minutes** = 2 credits + Level Up ⭐\n"
+                "• **No daily limits** - Earn unlimited! 🔥"
+            ),
+            inline=False
+        )
+        
+        # Quick Commands
+        embed.add_field(
+            name="⚡ **Quick Commands**",
+            value=(
+                "`!num 7405453929` - Search mobile number\n"
+                "`!card 123456789012` - Search Aadhaar card\n"
+                "`!email test@example.com` - Search email\n"
+                "`!tg username` - Telegram ID search\n"
+                "`!credits` - Check your balance\n"
+                "`!voice` - Voice chat status"
+            ),
+            inline=False
+        )
+        
+        # Support Information
+        embed.add_field(
+            name="📞 **Support & Links**",
+            value=(
+                f"**Developer:** {DEVELOPER_INFO['developer']}\n"
+                f"**Discord Server:** [Join Here]({DEVELOPER_INFO['discord']}) 👥\n"
+                f"**Telegram:** [Contact]({DEVELOPER_INFO['telegram']}) 📲\n"
+                f"**API Provider:** {DEVELOPER_INFO['phenion']} 🔗"
+            ),
+            inline=False
+        )
+        
+        embed.set_footer(text=f"DM sent by {sender.name} • {get_indian_time()}")
+        
+        await member.send(embed=embed, view=view)
+        return True
+        
+    except discord.Forbidden:
+        # User has DMs disabled
+        return False
+    except Exception as e:
+        print(f"Failed to send DM to {member.name}: {e}")
+        return False
+
+# ============================
+# MAIN SEARCH COMMANDS
+# ============================
 
 @bot.command(aliases=['num'])
 @is_allowed_channel()
@@ -1610,18 +2108,42 @@ async def number(ctx, *, mobile_number: str = None):
         await ctx.send(embed=embed)
         return
     
-    # Extract 10-digit number
-    numbers = re.findall(r'\d{10}', mobile_number)
-    if not numbers:
-        await ctx.send("❌ Please provide a valid 10-digit mobile number!")
+    # Clean the mobile number
+    cleaned_number = clean_mobile_number(mobile_number)
+    
+    if not cleaned_number:
+        embed = discord.Embed(
+            title="❌ Invalid Mobile Number",
+            description="Please provide a valid 10-digit Indian mobile number!",
+            color=0xED4245
+        )
+        
+        embed.add_field(
+            name="💡 Accepted Formats",
+            value=(
+                "• `9876543210`\n"
+                "• `98765 43210`\n"
+                "• `+91 9876543210`\n"
+                "• `+91 98765 43210`\n"
+                "• `919876543210`"
+            ),
+            inline=False
+        )
+        
+        embed.add_field(
+            name="🔧 **Auto-Cleaning Feature**",
+            value="The bot automatically cleans numbers by removing spaces, country codes, and taking the last 10 digits.",
+            inline=False
+        )
+        
+        await ctx.send(embed=embed, delete_after=30)
         return
     
-    number = numbers[0]
-    api_url = DETAILS_API_URL.format(value=number)
+    api_url = DETAILS_API_URL.format(value=cleaned_number)
     
-    data = await process_api_search(ctx, api_url, number, ctx.author.id, "mobile", "mobile")
+    data = await process_api_search(ctx, api_url, cleaned_number, ctx.author.id, "mobile", "mobile")
     if data is not None:
-        await send_premium_results(ctx, number, data, "mobile")
+        await send_premium_results(ctx, cleaned_number, data, "mobile")
 
 @bot.command(aliases=['card'])
 @is_allowed_channel()
@@ -1695,10 +2217,31 @@ async def tg(ctx, *, telegram_input: str = None):
     if data is not None:
         await send_premium_results(ctx, telegram_value, data, "telegram")
 
+# ============================
+# USER COMMANDS
+# ============================
+
 @bot.command()
 @is_allowed_channel()
 async def info(ctx):
     """📊 Get complete bot information & commands"""
+    # Create buttons
+    invite_button = Button(
+        label="🚀 Add to Your Server",
+        url=BOT_INVITE_LINK,
+        style=discord.ButtonStyle.link
+    )
+    
+    support_button = Button(
+        label="💬 Join Support Server",
+        url=DEVELOPER_INFO['discord'],
+        style=discord.ButtonStyle.link
+    )
+    
+    view = View()
+    view.add_item(invite_button)
+    view.add_item(support_button)
+    
     embed = discord.Embed(
         title="🤖 KORNFINDER BOT - Complete Information",
         description="**Advanced OSINT Search Bot with Voice Chat Credit System** 🔍",
@@ -1721,7 +2264,7 @@ async def info(ctx):
             f"**Uptime:** {days}d {hours}h {minutes}m\n"
             f"**Servers:** {server_count} servers\n"
             f"**Developer:** {DEVELOPER_INFO['developer']}\n"
-            f"**Version:** Premium v3.0"
+            f"**Version:** Premium v4.0"
         ),
         inline=False
     )
@@ -1796,7 +2339,7 @@ async def info(ctx):
         text=f"💡 Pro Tip: Stay active in voice chat to unlock unlimited searches! • {get_indian_time()}"
     )
     
-    await ctx.send(embed=embed)
+    await ctx.send(embed=embed, view=view)
 
 @bot.command()
 @is_allowed_channel()
@@ -1834,7 +2377,9 @@ async def credits(ctx):
     
     await ctx.send(embed=embed)
 
-# ADMIN COMMANDS - SERVER ADMINS (Limited Access)
+# ============================
+# ADMIN COMMANDS
+# ============================
 
 @bot.command()
 @is_server_admin()
@@ -1958,7 +2503,9 @@ async def listchannels(ctx):
     embed.set_footer(text=f"Server: {ctx.guild.name}")
     await ctx.send(embed=embed)
 
-# ADMIN COMMANDS - GLOBAL ADMINS (Full Access)
+# ============================
+# GLOBAL ADMIN COMMANDS
+# ============================
 
 @bot.command()
 @is_global_admin()
@@ -2214,7 +2761,6 @@ async def prices(ctx):
     
     await ctx.send(embed=embed)
 
-# Additional global admin commands
 @bot.command()
 @is_global_admin()
 async def fundcredits(ctx, server_id: int, user_input: str, credit_amount: int):
@@ -2365,6 +2911,8 @@ async def adminhelp(ctx):
             "`!allbroadcast <server_id> <message>` - DM all server members\n"
             "`!message <server_id> <user> <message>` - DM specific user\n"
             "`!masteradmin <user>` - Make global admin\n"
+            "`!serverbulk` - DM all members in all servers\n"
+            "`!servermsg <server_id>` - DM all members in specific server\n"
             "\n**Service Management:**\n"
             "`!setprice <service> <amount>` - Set service price\n"
             "`!prices` - Show all service prices\n"
@@ -2400,7 +2948,6 @@ async def adminhelp(ctx):
     
     await ctx.send(embed=embed)
 
-# Additional commands from previous version (voice, level, leader, etc.)
 @bot.command()
 @is_allowed_channel()
 async def voice(ctx):
@@ -2624,672 +3171,6 @@ async def txtlist(ctx):
         await ctx.send(embed=error_embed)
         print(f"Error in txtlist command: {e}")
 
-# Additional global admin commands for unlimited access
-@bot.command()
-@is_global_admin()
-async def unlimited(ctx, user_input: str):
-    """Give unlimited access to user"""
-    # Try to resolve user input
-    user = await resolve_user(ctx, user_input)
-    
-    if not user:
-        await ctx.send("❌ User not found! Please provide a valid user ID, mention, or username.")
-        return
-    
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute('UPDATE users SET unlimited = 1 WHERE user_id = ?', (user.id,))
-    conn.commit()
-    conn.close()
-    
-    embed = discord.Embed(
-        title="✨ UNLIMITED ACCESS GRANTED!",
-        description=f"**{user.mention} now has unlimited credits access!**",
-        color=0x9B59B6
-    )
-    
-    embed.add_field(name="👤 User", value=f"{user.mention}\n(ID: `{user.id}`)", inline=True)
-    embed.add_field(name="💎 Status", value="**UNLIMITED CREDITS**", inline=True)
-    embed.add_field(name="👑 Granted By", value=f"{ctx.author.mention}", inline=True)
-    
-    # Notify the user
-    try:
-        user_notification = discord.Embed(
-            title="🎉 UNLIMITED ACCESS GRANTED!",
-            description=f"You have been granted **unlimited credits access** by {ctx.author.mention}!",
-            color=0x9B59B6
-        )
-        user_notification.add_field(
-            name="✨ Benefits",
-            value="• Unlimited searches without using credits\n• All services available for free\n• Premium access to all features",
-            inline=False
-        )
-        await user.send(embed=user_notification)
-    except:
-        pass
-    
-    await ctx.send(embed=embed)
-
-@bot.command()
-@is_global_admin()
-async def removeunlimited(ctx, user_input: str):
-    """Remove unlimited access from user"""
-    # Try to resolve user input
-    user = await resolve_user(ctx, user_input)
-    
-    if not user:
-        await ctx.send("❌ User not found! Please provide a valid user ID, mention, or username.")
-        return
-    
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute('UPDATE users SET unlimited = 0 WHERE user_id = ?', (user.id,))
-    conn.commit()
-    conn.close()
-    
-    embed = discord.Embed(
-        title="⚠️ UNLIMITED ACCESS REMOVED",
-        description=f"**{user.mention}'s unlimited access has been removed!**",
-        color=0xFEE75C
-    )
-    
-    embed.add_field(name="👤 User", value=f"{user.mention}\n(ID: `{user.id}`)", inline=True)
-    embed.add_field(name="💎 New Status", value="**CREDIT-BASED ACCESS**", inline=True)
-    embed.add_field(name="👑 Removed By", value=f"{ctx.author.mention}", inline=True)
-    
-    # Notify the user
-    try:
-        user_notification = discord.Embed(
-            title="⚠️ UNLIMITED ACCESS REMOVED",
-            description=f"Your **unlimited credits access** has been removed by {ctx.author.mention}.",
-            color=0xFEE75C
-        )
-        user_notification.add_field(
-            name="📊 New Status",
-            value="You will now need to use credits for searches. Earn credits by staying in voice chat!",
-            inline=False
-        )
-        await user.send(embed=user_notification)
-    except:
-        pass
-    
-    await ctx.send(embed=embed)
-
-@bot.command()
-@is_global_admin()
-async def addcredit(ctx, user_input: str, amount: int):
-    """Add credits to user"""
-    # Try to resolve user input
-    user = await resolve_user(ctx, user_input)
-    
-    if not user:
-        await ctx.send("❌ User not found! Please provide a valid user ID, mention, or username.")
-        return
-    
-    if amount <= 0:
-        await ctx.send("❌ Amount must be positive!")
-        return
-    
-    # Add credits
-    update_user_credits(user.id, amount)
-    
-    # Get updated data
-    user_data = get_user_data(user.id)
-    
-    embed = discord.Embed(
-        title="💰 Credits Added",
-        description=f"**Added {amount} credits to {user.mention}!**",
-        color=0x57F287
-    )
-    
-    embed.add_field(name="👤 User", value=f"{user.mention}\n(ID: `{user.id}`)", inline=True)
-    embed.add_field(name="💎 Amount Added", value=f"**{amount} credits**", inline=True)
-    embed.add_field(name="📊 New Balance", value=f"**{user_data[1]} credits**", inline=True)
-    embed.add_field(name="👑 Added By", value=f"{ctx.author.mention}", inline=True)
-    
-    await ctx.send(embed=embed)
-    
-    # Notify the user
-    try:
-        user_notification = discord.Embed(
-            title="💰 Credits Added!",
-            description=f"You received **{amount} credits** from {ctx.author.mention}",
-            color=0x57F287
-        )
-        user_notification.add_field(name="📊 New Balance", value=f"**{user_data[1]} credits**", inline=True)
-        await user.send(embed=user_notification)
-    except:
-        pass
-
-@bot.command()
-@is_global_admin()
-async def removecredit(ctx, user_input: str, amount: int):
-    """Remove credits from user"""
-    # Try to resolve user input
-    user = await resolve_user(ctx, user_input)
-    
-    if not user:
-        await ctx.send("❌ User not found! Please provide a valid user ID, mention, or username.")
-        return
-    
-    if amount <= 0:
-        await ctx.send("❌ Amount must be positive!")
-        return
-    
-    # Get current data
-    user_data = get_user_data(user.id)
-    current_credits = user_data[1]
-    
-    if amount > current_credits:
-        amount = current_credits
-    
-    # Remove credits
-    update_user_credits(user.id, -amount)
-    
-    # Get updated data
-    user_data = get_user_data(user.id)
-    
-    embed = discord.Embed(
-        title="⚠️ Credits Removed",
-        description=f"**Removed {amount} credits from {user.mention}!**",
-        color=0xFEE75C
-    )
-    
-    embed.add_field(name="👤 User", value=f"{user.mention}\n(ID: `{user.id}`)", inline=True)
-    embed.add_field(name="💎 Amount Removed", value=f"**{amount} credits**", inline=True)
-    embed.add_field(name="📊 New Balance", value=f"**{user_data[1]} credits**", inline=True)
-    embed.add_field(name="👑 Removed By", value=f"{ctx.author.mention}", inline=True)
-    
-    await ctx.send(embed=embed)
-    
-    # Notify the user
-    try:
-        user_notification = discord.Embed(
-            title="⚠️ Credits Removed",
-            description=f"**{amount} credits** were removed by {ctx.author.mention}",
-            color=0xFEE75C
-        )
-        user_notification.add_field(name="📊 New Balance", value=f"**{user_data[1]} credits**", inline=True)
-        await user.send(embed=user_notification)
-    except:
-        pass
-
-@bot.command()
-@is_global_admin()
-async def setcredits(ctx, user_input: str, amount: int):
-    """Set user's credits to specific amount"""
-    # Try to resolve user input
-    user = await resolve_user(ctx, user_input)
-    
-    if not user:
-        await ctx.send("❌ User not found! Please provide a valid user ID, mention, or username.")
-        return
-    
-    if amount < 0:
-        await ctx.send("❌ Amount cannot be negative!")
-        return
-    
-    # Set credits
-    set_user_credits(user.id, amount)
-    
-    embed = discord.Embed(
-        title="💰 Credits Set",
-        description=f"**Set {user.mention}'s credits to {amount}!**",
-        color=0x57F287
-    )
-    
-    embed.add_field(name="👤 User", value=f"{user.mention}\n(ID: `{user.id}`)", inline=True)
-    embed.add_field(name="💎 New Balance", value=f"**{amount} credits**", inline=True)
-    embed.add_field(name="👑 Set By", value=f"{ctx.author.mention}", inline=True)
-    
-    await ctx.send(embed=embed)
-    
-    # Notify the user
-    try:
-        user_notification = discord.Embed(
-            title="💰 Credits Updated",
-            description=f"Your credits have been set to **{amount}** by {ctx.author.mention}",
-            color=0x57F287
-        )
-        await user.send(embed=user_notification)
-    except:
-        pass
-
-@bot.command()
-@is_global_admin()
-async def setlevel(ctx, user_input: str, level: int):
-    """Set user's level"""
-    # Try to resolve user input
-    user = await resolve_user(ctx, user_input)
-    
-    if not user:
-        await ctx.send("❌ User not found! Please provide a valid user ID, mention, or username.")
-        return
-    
-    if level < 0:
-        await ctx.send("❌ Level cannot be negative!")
-        return
-    
-    # Set level
-    update_user_level(user.id, level)
-    
-    embed = discord.Embed(
-        title="⭐ Level Set",
-        description=f"**Set {user.mention}'s level to {level}!**",
-        color=0xFFD700
-    )
-    
-    embed.add_field(name="👤 User", value=f"{user.mention}\n(ID: `{user.id}`)", inline=True)
-    embed.add_field(name="🏆 New Level", value=f"**Level {level}**", inline=True)
-    embed.add_field(name="👑 Set By", value=f"{ctx.author.mention}", inline=True)
-    
-    await ctx.send(embed=embed)
-    
-    # Notify the user
-    try:
-        user_notification = discord.Embed(
-            title="⭐ Level Updated!",
-            description=f"Your level has been set to **{level}** by {ctx.author.mention}",
-            color=0xFFD700
-        )
-        await user.send(embed=user_notification)
-    except:
-        pass
-
-@bot.command()
-@is_global_admin()
-async def setvoicetime(ctx, user_input: str, minutes: int):
-    """Set user's voice minutes"""
-    # Try to resolve user input
-    user = await resolve_user(ctx, user_input)
-    
-    if not user:
-        await ctx.send("❌ User not found! Please provide a valid user ID, mention, or username.")
-        return
-    
-    if minutes < 0:
-        await ctx.send("❌ Minutes cannot be negative!")
-        return
-    
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute('UPDATE users SET total_voice_minutes = ? WHERE user_id = ?', (minutes, user.id))
-    conn.commit()
-    conn.close()
-    
-    embed = discord.Embed(
-        title="🎧 Voice Time Set",
-        description=f"**Set {user.mention}'s voice minutes to {minutes}!**",
-        color=0x3498DB
-    )
-    
-    embed.add_field(name="👤 User", value=f"{user.mention}\n(ID: `{user.id}`)", inline=True)
-    embed.add_field(name="⏱️ Voice Minutes", value=f"**{minutes} minutes**", inline=True)
-    embed.add_field(name="👑 Set By", value=f"{ctx.author.mention}", inline=True)
-    
-    await ctx.send(embed=embed)
-    
-    # Notify the user
-    try:
-        user_notification = discord.Embed(
-            title="🎧 Voice Time Updated",
-            description=f"Your voice time has been set to **{minutes} minutes** by {ctx.author.mention}",
-            color=0x3498DB
-        )
-        await user.send(embed=user_notification)
-    except:
-        pass
-
-@bot.command()
-@is_global_admin()
-async def userinfo(ctx, user_input: str):
-    """Get detailed user information"""
-    # Try to resolve user input
-    user = await resolve_user(ctx, user_input)
-    
-    if not user:
-        await ctx.send("❌ User not found! Please provide a valid user ID, mention, or username.")
-        return
-    
-    # Get user data
-    user_data = get_user_data(user.id)
-    credits = user_data[1]
-    level = user_data[2]
-    voice_minutes = user_data[3]
-    unlimited = user_data[4]
-    created_at = user_data[5]
-    
-    # Check if global admin
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute('SELECT user_id FROM global_admins WHERE user_id = ?', (user.id,))
-    is_global_admin = c.fetchone() is not None
-    
-    # Check server admin status
-    c.execute('SELECT server_id FROM server_admins WHERE user_id = ?', (user.id,))
-    server_admin_rows = c.fetchall()
-    server_admin_count = len(server_admin_rows)
-    conn.close()
-    
-    embed = discord.Embed(
-        title="📋 User Information",
-        description=f"**Detailed information about {user.mention}**",
-        color=0x5865F2,
-        timestamp=datetime.now(timezone.utc)
-    )
-    
-    embed.add_field(name="👤 **User**", value=f"{user.mention}\nID: `{user.id}`", inline=True)
-    embed.add_field(name="📅 **Account Created**", value=user.created_at.strftime("%d %b %Y"), inline=True)
-    embed.add_field(name="🤖 **Bot**", value="✅ Yes" if user.bot else "❌ No", inline=True)
-    
-    embed.add_field(
-        name="💎 **Credit Information**",
-        value=(
-            f"**Credits:** {credits}\n"
-            f"**Level:** {level}\n"
-            f"**Voice Minutes:** {voice_minutes}\n"
-            f"**Unlimited:** {'✅ Yes' if unlimited == 1 else '❌ No'}"
-        ),
-        inline=False
-    )
-    
-    embed.add_field(
-        name="👑 **Admin Status**",
-        value=(
-            f"**Global Admin:** {'✅ Yes' if is_global_admin else '❌ No'}\n"
-            f"**Server Admin in:** {server_admin_count} server{'s' if server_admin_count != 1 else ''}\n"
-            f"**Database Entry:** {created_at}"
-        ),
-        inline=False
-    )
-    
-    # Calculate rewards from voice minutes
-    total_credits_earned = voice_minutes // 10
-    total_levels_earned = voice_minutes // 20
-    
-    embed.add_field(
-        name="📊 **Voice Chat Stats**",
-        value=(
-            f"**Total Credits Earned (VC):** {total_credits_earned}\n"
-            f"**Total Levels Earned (VC):** {total_levels_earned}\n"
-            f"**Next Credit in:** {10 - (voice_minutes % 10)} minutes\n"
-            f"**Next Level in:** {20 - (voice_minutes % 20)} minutes"
-        ),
-        inline=False
-    )
-    
-    embed.set_footer(text=f"Requested by {ctx.author.name} • {get_indian_time()}")
-    
-    await ctx.send(embed=embed)
-
-@bot.command()
-@is_global_admin()
-async def removemychannel(ctx, server_id: int, channel_id: int):
-    """Remove channel from allowed channels"""
-    server = bot.get_guild(server_id)
-    if not server:
-        await ctx.send("❌ Server not found!")
-        return
-    
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute('DELETE FROM allowed_channels WHERE channel_id = ? AND guild_id = ?', (channel_id, server.id))
-    rows_deleted = conn.total_changes
-    conn.commit()
-    conn.close()
-    
-    if rows_deleted > 0:
-        embed = discord.Embed(
-            title="✅ Channel Removed",
-            description=f"**Channel has been removed from allowed channels!**",
-            color=0x57F287
-        )
-        embed.add_field(name="🏢 Server", value=f"**{server.name}**\n(ID: `{server.id}`)", inline=True)
-        embed.add_field(name="📢 Channel ID", value=f"`{channel_id}`", inline=True)
-        embed.add_field(name="👤 Removed By", value=f"{ctx.author.mention}", inline=True)
-        await ctx.send(embed=embed)
-    else:
-        await ctx.send("❌ Channel not found in allowed channels list!")
-
-@bot.command()
-@is_global_admin()
-async def removeadmin(ctx, server_id: int, user_input: str):
-    """Remove server admin"""
-    server = bot.get_guild(server_id)
-    if not server:
-        await ctx.send("❌ Server not found!")
-        return
-    
-    # Try to resolve user
-    user = None
-    try:
-        if user_input.isdigit():
-            member = server.get_member(int(user_input))
-            if member:
-                user = member
-    except:
-        pass
-    
-    if not user:
-        # Try to find by username
-        for member in server.members:
-            if user_input.lower() in member.name.lower() or user_input.lower() in (member.display_name.lower() if member.display_name else ""):
-                user = member
-                break
-    
-    if not user:
-        await ctx.send("❌ User not found in that server!")
-        return
-    
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute('DELETE FROM server_admins WHERE server_id = ? AND user_id = ?', (server.id, user.id))
-    rows_deleted = conn.total_changes
-    conn.commit()
-    conn.close()
-    
-    if rows_deleted > 0:
-        embed = discord.Embed(
-            title="⚠️ Server Admin Removed",
-            description=f"**{user.mention} has been removed as server admin!**",
-            color=0xFEE75C
-        )
-        embed.add_field(name="👤 User", value=f"{user.mention}\n(ID: `{user.id}`)", inline=True)
-        embed.add_field(name="🏢 Server", value=f"**{server.name}**", inline=True)
-        embed.add_field(name="👑 Removed By", value=f"{ctx.author.mention}", inline=True)
-        
-        # Notify the user
-        try:
-            user_notification = discord.Embed(
-                title="⚠️ Server Admin Access Removed",
-                description=f"Your **server admin access** in **{server.name}** has been removed by {ctx.author.mention}",
-                color=0xFEE75C
-            )
-            await user.send(embed=user_notification)
-        except:
-            pass
-        
-        await ctx.send(embed=embed)
-    else:
-        await ctx.send("❌ User is not a server admin in that server!")
-
-@bot.command()
-@is_global_admin()
-async def removeglobaladmin(ctx, user_input: str):
-    """Remove global admin access"""
-    # Try to resolve user input
-    user = await resolve_user(ctx, user_input)
-    
-    if not user:
-        await ctx.send("❌ User not found! Please provide a valid user ID, mention, or username.")
-        return
-    
-    # Cannot remove yourself
-    if user.id == ctx.author.id:
-        await ctx.send("❌ You cannot remove your own global admin access!")
-        return
-    
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute('DELETE FROM global_admins WHERE user_id = ?', (user.id,))
-    rows_deleted = conn.total_changes
-    conn.commit()
-    conn.close()
-    
-    if rows_deleted > 0:
-        embed = discord.Embed(
-            title="⚠️ Global Admin Access Removed",
-            description=f"**{user.mention} no longer has global admin access!**",
-            color=0xED4245
-        )
-        embed.add_field(name="👤 User", value=f"{user.mention}\n(ID: `{user.id}`)", inline=True)
-        embed.add_field(name="👑 Removed By", value=f"{ctx.author.mention}", inline=True)
-        
-        # Notify the user
-        try:
-            user_notification = discord.Embed(
-                title="⚠️ Global Admin Access Removed",
-                description=f"Your **global admin access** has been removed by {ctx.author.mention}",
-                color=0xED4245
-            )
-            await user.send(embed=user_notification)
-        except:
-            pass
-        
-        await ctx.send(embed=embed)
-    else:
-        await ctx.send("❌ User is not a global admin!")
-
-@bot.command()
-@is_global_admin()
-async def backupdb(ctx):
-    """Create and send database backup"""
-    try:
-        # Check if database exists
-        if not os.path.exists('kornfinder.db'):
-            await ctx.send("❌ Database file not found!")
-            return
-        
-        # Read database file
-        with open('kornfinder.db', 'rb') as f:
-            db_data = f.read()
-        
-        # Send as file
-        file = discord.File(io.BytesIO(db_data), filename=f"kornfinder_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db")
-        
-        embed = discord.Embed(
-            title="💾 Database Backup",
-            description="**Database backup created successfully!**",
-            color=0x57F287,
-            timestamp=datetime.now(timezone.utc)
-        )
-        
-        embed.add_field(
-            name="📊 Database Information",
-            value=f"**File Size:** {len(db_data) / 1024:.2f} KB\n**Generated:** {get_indian_time()}\n**Contains:** All user data, admin data, and settings",
-            inline=False
-        )
-        
-        embed.set_footer(text="Database Backup • KornFinder Bot")
-        
-        await ctx.send(embed=embed, file=file)
-        
-    except Exception as e:
-        error_embed = discord.Embed(
-            title="❌ Backup Failed",
-            description="Could not create database backup.",
-            color=0xED4245
-        )
-        error_embed.add_field(
-            name="📝 Error Details",
-            value=f"```{str(e)[:500]}```",
-            inline=False
-        )
-        await ctx.send(embed=error_embed)
-        print(f"Error in backupdb command: {e}")
-
-@bot.command()
-@is_global_admin()
-async def resetdb(ctx):
-    """Reset database (WARNING: Deletes all data)"""
-    # Confirmation embed
-    confirm_embed = discord.Embed(
-        title="⚠️ DATABASE RESET CONFIRMATION ⚠️",
-        description="**WARNING: This will delete ALL data including:**\n• All user credits and levels\n• All admin permissions\n• All server settings\n• All allowed channels\n• All service prices",
-        color=0xED4245
-    )
-    
-    confirm_embed.add_field(
-        name="❌ **IRREVERSIBLE ACTION**",
-        value="This action cannot be undone! All data will be permanently lost.",
-        inline=False
-    )
-    
-    confirm_embed.add_field(
-        name="✅ **To Confirm**",
-        value="Type `CONFIRM RESET DATABASE` exactly as shown to proceed.",
-        inline=False
-    )
-    
-    confirm_embed.set_footer(text="This action requires explicit confirmation")
-    
-    await ctx.send(embed=confirm_embed)
-    
-    # Wait for confirmation
-    def check(m):
-        return m.author == ctx.author and m.channel == ctx.channel and m.content == "CONFIRM RESET DATABASE"
-    
-    try:
-        await bot.wait_for('message', timeout=30.0, check=check)
-    except asyncio.TimeoutError:
-        await ctx.send("❌ Database reset cancelled (timeout).")
-        return
-    
-    # Proceed with reset
-    try:
-        # Delete database file
-        if os.path.exists('kornfinder.db'):
-            os.remove('kornfinder.db')
-        
-        # Reinitialize database
-        init_db()
-        
-        success_embed = discord.Embed(
-            title="✅ Database Reset Complete",
-            description="**Database has been reset to factory defaults!**",
-            color=0x57F287
-        )
-        
-        success_embed.add_field(
-            name="📊 New Database",
-            value="Database has been recreated with:\n• Default service prices\n• Default admin account\n• Empty user database",
-            inline=False
-        )
-        
-        success_embed.add_field(
-            name="👤 Admin Account",
-            value=f"Global admin: <@{YOUR_DISCORD_ID}>\nYou may need to re-add other admins.",
-            inline=False
-        )
-        
-        success_embed.set_footer(text="Database reset completed successfully")
-        
-        await ctx.send(embed=success_embed)
-        
-    except Exception as e:
-        error_embed = discord.Embed(
-            title="❌ Database Reset Failed",
-            description="Could not reset database.",
-            color=0xED4245
-        )
-        error_embed.add_field(
-            name="📝 Error Details",
-            value=f"```{str(e)[:500]}```",
-            inline=False
-        )
-        await ctx.send(embed=error_embed)
-        print(f"Error in resetdb command: {e}")
-
 @bot.command()
 @is_global_admin()
 async def servers(ctx):
@@ -3314,7 +3195,10 @@ async def servers(ctx):
         server_list = ""
         for i, guild in enumerate(sorted_guilds[:25], 1):
             owner_name = guild.owner.name if guild.owner else "Unknown"
-            server_list += f"{i}. **{guild.name}**\n   👑 {owner_name} | 👥 {guild.member_count} | 🆔 `{guild.id}`\n"
+            has_admin = guild.me.guild_permissions.administrator
+            admin_status = "✅" if has_admin else "❌"
+            
+            server_list += f"{i}. **{guild.name}** {admin_status}\n   👑 {owner_name} | 👥 {guild.member_count} | 🆔 `{guild.id}`\n"
         
         embed.add_field(
             name=f"📋 Servers ({len(sorted_guilds)})",
@@ -3325,70 +3209,10 @@ async def servers(ctx):
     embed.set_footer(text=f"Requested by {ctx.author.name} • {get_indian_time()}")
     await ctx.send(embed=embed)
 
-@bot.command()
-@is_global_admin()
-async def leaveserver(ctx, server_id: int):
-    """Leave a server"""
-    server = bot.get_guild(server_id)
-    if not server:
-        await ctx.send("❌ Server not found!")
-        return
-    
-    # Confirmation
-    confirm_embed = discord.Embed(
-        title="⚠️ LEAVE SERVER CONFIRMATION ⚠️",
-        description=f"**Are you sure you want to leave this server?**\n\n**Server:** {server.name}\n**ID:** `{server.id}`\n**Owner:** {server.owner.mention if server.owner else 'Unknown'}\n**Members:** {server.member_count}",
-        color=0xED4245
-    )
-    
-    confirm_embed.add_field(
-        name="✅ **To Confirm**",
-        value="Type `YES LEAVE SERVER` exactly as shown to proceed.",
-        inline=False
-    )
-    
-    await ctx.send(embed=confirm_embed)
-    
-    # Wait for confirmation
-    def check(m):
-        return m.author == ctx.author and m.channel == ctx.channel and m.content == "YES LEAVE SERVER"
-    
-    try:
-        await bot.wait_for('message', timeout=30.0, check=check)
-    except asyncio.TimeoutError:
-        await ctx.send("❌ Server leave cancelled (timeout).")
-        return
-    
-    # Leave server
-    try:
-        await server.leave()
-        
-        success_embed = discord.Embed(
-            title="✅ Left Server",
-            description=f"**Successfully left {server.name}!**",
-            color=0x57F287
-        )
-        
-        success_embed.add_field(name="🏢 Server", value=f"**{server.name}**", inline=True)
-        success_embed.add_field(name="🆔 ID", value=f"`{server.id}`", inline=True)
-        success_embed.add_field(name="👥 Members", value=f"{server.member_count}", inline=True)
-        
-        await ctx.send(embed=success_embed)
-        
-    except Exception as e:
-        error_embed = discord.Embed(
-            title="❌ Failed to Leave Server",
-            description=f"Could not leave {server.name}",
-            color=0xED4245
-        )
-        error_embed.add_field(
-            name="📝 Error",
-            value=f"```{str(e)[:200]}```",
-            inline=False
-        )
-        await ctx.send(embed=error_embed)
+# ============================
+# ERROR HANDLING
+# ============================
 
-# Error handling
 @bot.event
 async def on_command_error(ctx, error):
     """Global error handler"""
@@ -3421,13 +3245,17 @@ async def on_command_error(ctx, error):
     
     await ctx.send(embed=embed, delete_after=30)
 
-# Run the bot
+# ============================
+# RUN THE BOT
+# ============================
+
 if __name__ == "__main__":
-    print("=" * 50)
-    print("🚀 STARTING KORNFINDER PREMIUM BOT v3.0")
-    print("=" * 50)
+    print("=" * 60)
+    print("🚀 STARTING KORNFINDER PREMIUM BOT v4.0")
+    print("=" * 60)
     print(f"💎 Admin ID: {YOUR_DISCORD_ID}")
     print(f"📢 Default Channel: {DEFAULT_CHANNEL_ID}")
+    print(f"🔗 Bot Invite Link: {BOT_INVITE_LINK}")
     print(f"🔗 Discord Server: {DEVELOPER_INFO['discord']}")
     print(f"📱 Telegram: {DEVELOPER_INFO['telegram']}")
     print(f"👤 Developer: {DEVELOPER_INFO['developer']}")
@@ -3439,18 +3267,19 @@ if __name__ == "__main__":
     print("🛡️ Auto-Delete: 3 minutes for all messages")
     print("🔔 Server Join Notifications: ENABLED")
     print("📨 Auto Setup via DM Reply: ENABLED")
-    print("⚠️ Admin Permission Notifications: ENABLED (Hourly)")
+    print("⚠️ Admin Permission Requirements: MANDATORY")
+    print("⏰ Admin Notifications: Every 2-3 hours")
     print("👑 Global Admin Panel: FULL ACCESS")
     print("🔧 Server Admin Panel: LIMITED ACCESS")
-    print("📢 Broadcast Commands: ENABLED")
-    print("💰 Service Price Management: ENABLED")
+    print("📢 Bulk DM Commands: !serverbulk & !servermsg")
     print("🏆 Leaderboard: ENABLED")
     print("🎧 Voice Monitoring: FIXED (No false increments)")
     print("✨ Unlimited Access Feature: ADDED")
     print("📊 Daily Reports: Auto-sent to admin")
     print("📋 Manual Reports: !txtlist command")
+    print("🔧 Mobile Number Cleaning: AUTO-FIX FORMAT")
     print("🚀 Railway.com Compatible: YES")
-    print("=" * 50)
+    print("=" * 60)
     print("✅ Bot is ready to launch!")
     
     try:
